@@ -7,7 +7,7 @@
     :license: LGPL – see license.lgpl for more details.
 '''
 
-from pyca.utils import timestamp, try_mkdir, configure_service, terminate
+from pyca.utils import timestamp, try_mkdir, try_mkdir_event, configure_service, terminate
 from pyca.utils import set_service_status, set_service_status_immediate
 from pyca.utils import recording_state, update_event_status
 from pyca.config import config
@@ -54,7 +54,7 @@ def start_capture(upcoming_event):
         db.commit()
 
     try_mkdir(config()['capture']['directory'])
-    os.mkdir(event.directory())
+    try_mkdir_event(event.directory())
 
     # Set state
     update_event_status(event, Status.RECORDING)
