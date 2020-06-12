@@ -105,7 +105,6 @@ def try_mkdir(directory):
         if err.errno != errno.EEXIST:
             raise err
 
-
 def try_mkdir_event(directory):
     '''Try to create a directory. Rename and create new if it already exists.
     '''
@@ -113,13 +112,13 @@ def try_mkdir_event(directory):
         os.mkdir(directory)
     except OSError as err:
         if err.errno == errno.EEXIST:
-            now = time.strftime("%Y%m%d%H%M%S", time.gmtime())
-            logger.warning('Directory %s exists, renaming old appending %s' %
-                           (directory, now))
+            now = time.strftime("%Y%m%d%H%M%S",time.gmtime())
+            logger.warning('Event directory %s already exists, renaming it with timestamp %s' % (directory, now))
             os.rename(directory, directory + "_" + now)
             os.mkdir(directory)
         else:
             raise err
+
 
 
 def configure_service(service):
