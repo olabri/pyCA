@@ -98,6 +98,7 @@ def recording_command(event):
     cmd = cmd.replace('{{dir}}', event.directory())
     cmd = cmd.replace('{{name}}', event.name())
     cmd = cmd.replace('{{previewdir}}', conf['preview_dir'])
+    cmd = cmd.replace('{{uid}}', event.uid)
 
     # Signal configuration
     sigterm_time = conf['sigterm_time']
