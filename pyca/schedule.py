@@ -16,6 +16,7 @@ from datetime import datetime
 import dateutil.parser
 import logging
 import pycurl
+import json
 import time
 import traceback
 
@@ -58,6 +59,8 @@ def get_schedule():
     '''Try to load schedule from the Matterhorn core. Returns a valid schedule
     or None on failure.
     '''
+    conf = config('agent')
+    live = False
     uri = '%s/calendars?agentid=%s' % (config()['service-scheduler'][0],
                                        config()['agent']['name'])
     lookahead = config()['agent']['cal_lookahead'] * 24 * 60 * 60
@@ -78,8 +81,19 @@ def get_schedule():
     db = get_session()
     db.query(UpcomingEvent).delete()
     for event in cal:
+        live = False
         # Ignore events that have already ended
         if event['dtend'] <= timestamp():
+            continue
+        if conf['live_mode']:
+            for attitem in event["attach"]:
+                if attitem["data"].find("org.opencastproject.workflow.config.publishLive=true") !=-1:
+                    logger.info('Next scheduled recording  %s is live!' % datetime.fromtimestamp(event['dtstart']))
+                    live = True
+                else:
+                    noop = True
+                    #logger.info('Next scheduled recording %s is not live so we skip it!' % datetime.fromtimestamp(event['dtstart']))
+        if live == False:
             continue
         e = UpcomingEvent()
         e.start = event['dtstart']

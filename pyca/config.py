@@ -18,6 +18,7 @@ name             = string(default='pyca')
 update_frequency = integer(min=5, default=60)
 cal_lookahead    = integer(min=0, default=14)
 backup_mode      = boolean(default=false)
+live_mode      = boolean(default=false)
 database         = string(default='sqlite:///pyca.db')
 
 [capture]
@@ -102,6 +103,9 @@ def check():
         open(config('server')['certificate'], 'rb').close()
     if config('agent')['backup_mode']:
         logger.info('Agent runs in bakup mode. No data will be sent to '
+                    'Opencast')
+    if config('agent')['live_mode']:
+        logger.info('Agent runs in live mode. No command will be run if the event is not scheduled as a Live Event'
                     'Opencast')
 
 
