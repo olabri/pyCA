@@ -88,7 +88,7 @@ def get_schedule():
             continue
         if conf['live_mode'] == True:
             for attitem in event["attach"]:
-                if attitem["data"].find("org.opencastproject.workflow.config.publishLive=true") !=-1:
+                if attitem["data"].lower(find("org.opencastproject.workflow.config.publishlive=true")) !=-1:
                     logger.info('Next scheduled recording  %s is live!' % datetime.fromtimestamp(event['dtstart']))
                     live = True
                 else:
