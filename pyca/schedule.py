@@ -82,7 +82,7 @@ def get_schedule():
     db.query(UpcomingEvent).delete()
     for event in cal:
         live = False
-        noop = False 
+        noop = False
         # Ignore events that have already ended
         if event['dtend'] <= timestamp():
             continue
@@ -93,7 +93,7 @@ def get_schedule():
                     live = True
                 else:
                     noop = True
-                    logger.info('Next scheduled recording %s is not live so we skip it!' % datetime.fromtimestamp(event['dtstart']))
+                    # logger.info('Next scheduled recording %s is not live so we skip it!' % datetime.fromtimestamp(event['dtstart']))
         if live == False and noop == True:
             continue
         e = UpcomingEvent()
