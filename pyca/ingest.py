@@ -131,7 +131,7 @@ def control_loop():
             time.sleep(delay)
             logger.info ("done delaying")
             safe_start_ingest(event)
-
+        time.sleep(1.0)
     logger.info('Shutting down ingest service')
     set_service_status(Service.INGEST, ServiceStatus.STOPPED)
 
