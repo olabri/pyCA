@@ -126,10 +126,9 @@ def control_loop():
                              .filter(RecordedEvent.status ==
                                      Status.FINISHED_RECORDING).first()
         if event:
-            delay = random.randint(config()['ingest']['delay_min'],config()['ingest']['delay_max'])
-            logger.info ("delaying %s second" % delay)
+            delay = random.randint(config('ingest', 'delay_min'), config('ingest', 'delay_max'))
+            logger.info ("Delaying ingest for %s seconds", delay)
             time.sleep(delay)
-            logger.info ("done delaying")
             safe_start_ingest(event)
         time.sleep(1.0)
     logger.info('Shutting down ingest service')
