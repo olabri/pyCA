@@ -126,7 +126,9 @@ def control_loop():
                              .filter(RecordedEvent.status ==
                                      Status.FINISHED_RECORDING).first()
         if event:
-            delay = random.randint(config('ingest', 'delay_min'), config('ingest', 'delay_max'))
+            #delay = random.randint(config('ingest', 'delay_min'), config('ingest', 'delay_max'))
+            #this is for the new version of pyCA. Not supported for UiB yet
+            delay = random.randint(config()['ingest']['delay_min'],config()['ingest']['delay_max'])
             logger.info ("Delaying ingest for %s seconds", delay)
             time.sleep(delay)
             safe_start_ingest(event)
