@@ -7,15 +7,17 @@
     :license: LGPL – see license.lgpl for more details.
 '''
 
-from pyca.utils import timestamp, try_mkdir, configure_service, terminate
+from pyca.utils import timestamp, try_mkdir, terminate
 from pyca.utils import set_service_status, set_service_status_immediate
 from pyca.utils import recording_state, update_event_status
 from pyca.config import config
 from pyca.db import get_session, RecordedEvent, UpcomingEvent, Status,\
-                    Service, ServiceStatus
+                    Service, ServiceStatus, with_session
+import glob
 import logging
 import os
 import os.path
+import sdnotify
 import shlex
 import signal
 import subprocess
@@ -24,6 +26,7 @@ import time
 import traceback
 
 logger = logging.getLogger(__name__)
+notify = sdnotify.SystemdNotifier()
 captureproc = None
 
 
@@ -36,14 +39,14 @@ def sigterm_handler(signum, frame):
     sys.exit(0)
 
 
-def start_capture(upcoming_event):
+@with_session
+def start_capture(db, upcoming_event):
     '''Start the capture process, creating all necessary files and directories
     as well as ingesting the captured files if no backup mode is configured.
     '''
     logger.info('Start recording')
 
     # First move event to recording_event table
-    db = get_session()
     event = db.query(RecordedEvent)\
               .filter(RecordedEvent.uid == upcoming_event.uid)\
               .filter(RecordedEvent.start == upcoming_event.start)\
@@ -53,8 +56,8 @@ def start_capture(upcoming_event):
         db.add(event)
         db.commit()
 
-    try_mkdir(config()['capture']['directory'])
-    os.mkdir(event.directory())
+    try_mkdir(config('capture', 'directory'))
+    try_mkdir(event.directory())
 
     # Set state
     update_event_status(event, Status.RECORDING)
@@ -62,14 +65,21 @@ def start_capture(upcoming_event):
     set_service_status_immediate(Service.CAPTURE, ServiceStatus.BUSY)
 
     # Recording
-    tracks = recording_command(event)
-    event.set_tracks(tracks)
+    files = recording_command(event)
+    # [(flavor,path),…]
+    event.set_tracks(list(zip(config('capture', 'flavors'), files)))
     db.commit()
 
     # Set status
-    update_event_status(event, Status.FINISHED_RECORDING)
+    # If part files exist, its an partial recording
+    p = any([glob.glob(f'{f}-part-*') for f in files])
+    state = Status.PARTIAL_RECORDING if p else Status.FINISHED_RECORDING
+    logger.info("Set %s to %s", event.uid, Status.str(state))
+    update_event_status(event, state)
     recording_state(event.uid, 'capture_finished')
     set_service_status_immediate(Service.CAPTURE, ServiceStatus.IDLE)
+
+    logger.info('Finished recording')
 
 
 def safe_start_capture(event):
@@ -79,12 +89,14 @@ def safe_start_capture(event):
     try:
         start_capture(event)
     except Exception:
-        logger.error('Recording failed')
-        logger.error(traceback.format_exc())
-        # Update state
-        recording_state(event.uid, 'capture_error')
-        update_event_status(event, Status.FAILED_RECORDING)
-        set_service_status_immediate(Service.CAPTURE, ServiceStatus.IDLE)
+        logger.exception('Recording failed')
+        # Update current status in Opencast
+        try:
+            set_service_status_immediate(Service.CAPTURE, ServiceStatus.IDLE)
+            recording_state(event.uid, 'capture_error')
+            update_event_status(event, Status.FAILED_RECORDING)
+        except Exception:
+            logger.exception('Could not update recording status')
 
 
 def recording_command(event):
@@ -99,9 +111,30 @@ def recording_command(event):
     cmd = cmd.replace('{{previewdir}}', conf['preview_dir'])
     cmd = cmd.replace('{{uid}}', event.uid)
 
+    # Parse files into list
+    files = (f.replace('{{dir}}', event.directory()) for f in conf['files'])
+    files = [f.replace('{{name}}', event.name()) for f in files]
+
+    # Move existing files from previous failed recordings
+    for f in files:
+        if not os.path.exists(f):
+            continue
+        # New filename
+        i = 0
+        while True:
+            new_filename = f'{f}-part-{i}'
+            if not os.path.exists(new_filename):
+                break
+            i += 1
+        # Move file
+        os.rename(f, new_filename)
+        logger.warning("Moved file %s to %s to keep it", f, new_filename)
+
     # Signal configuration
     sigterm_time = conf['sigterm_time']
     sigkill_time = conf['sigkill_time']
+    sigcustom_time = conf['sigcustom_time']
+    sigcustom_time = 0 if sigcustom_time < 0 else event.end + sigcustom_time
     sigterm_time = 0 if sigterm_time < 0 else event.end + sigterm_time
     sigkill_time = 0 if sigkill_time < 0 else event.end + sigkill_time
 
@@ -112,14 +145,22 @@ def recording_command(event):
     captureproc = subprocess.Popen(args, stdin=DEVNULL)
     hasattr(subprocess, 'DEVNULL') or os.close(DEVNULL)
 
+    # Set systemd status
+    notify.notify('STATUS=Capturing')
+
     # Check process
     while captureproc.poll() is None:
+        notify.notify('WATCHDOG=1')
+        if sigcustom_time and timestamp() > sigcustom_time:
+            logger.info("Sending custom signal to capture process")
+            captureproc.send_signal(conf['sigcustom'])
+            sigcustom_time = 0  # send only once
         if sigterm_time and timestamp() > sigterm_time:
             logger.info("Terminating capture process")
             captureproc.terminate()
             sigterm_time = 0  # send only once
         elif sigkill_time and timestamp() > sigkill_time:
-            logger.warning("Terminating capture process")
+            logger.warning("Killing capture process")
             captureproc.kill()
             sigkill_time = 0  # send only once
         time.sleep(0.1)
@@ -133,29 +174,35 @@ def recording_command(event):
             logger.warning(traceback.format_exc())
 
     # Check process for errors
-    exitcode = config()['capture']['exit_code']
+    exitcode = conf['exit_code']
     if captureproc.poll() > 0 and captureproc.returncode != exitcode:
         raise RuntimeError('Recording failed (%i)' % captureproc.returncode)
 
-    # Return [(flavor,path),…]
-    files = (f.replace('{{dir}}', event.directory()) for f in conf['files'])
-    files = (f.replace('{{name}}', event.name()) for f in files)
-    return list(zip(conf['flavors'], files))
+    # Reset systemd status
+    notify.notify('STATUS=Waiting')
+
+    # files
+    return files
 
 
 def control_loop():
     '''Main loop of the capture agent, retrieving and checking the schedule as
     well as starting the capture process if necessry.
     '''
-    set_service_status(Service.CAPTURE, ServiceStatus.IDLE)
+    set_service_status_immediate(Service.CAPTURE, ServiceStatus.IDLE)
+    notify.notify('READY=1')
+    notify.notify('STATUS=Waiting')
     while not terminate():
+        notify.notify('WATCHDOG=1')
         # Get next recording
-        event = get_session().query(UpcomingEvent)\
-                             .filter(UpcomingEvent.start <= timestamp())\
-                             .filter(UpcomingEvent.end > timestamp())\
-                             .first()
+        session = get_session()
+        event = session.query(UpcomingEvent)\
+                       .filter(UpcomingEvent.start <= timestamp())\
+                       .filter(UpcomingEvent.end > timestamp())\
+                       .first()
         if event:
             safe_start_capture(event)
+        session.close()
         time.sleep(1.0)
     logger.info('Shutting down capture service')
     set_service_status(Service.CAPTURE, ServiceStatus.STOPPED)
@@ -165,5 +212,4 @@ def run():
     '''Start the capture agent.
     '''
     signal.signal(signal.SIGTERM, sigterm_handler)
-    configure_service('capture.admin')
     control_loop()

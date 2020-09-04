@@ -46,7 +46,7 @@ summary {
 
 #status > div {
     display: inline-block;
-    width: 90px;
+    min-width: 90px;
     height: 75px;
     margin: 5px;
     padding: 20px;
@@ -102,4 +102,43 @@ tr.extendlist a {
 tr.extendlist td {
     padding: 5px 10px;
     text-align: center;
+}
+
+#preview img {
+    max-width: 90%;
+    max-height: 300px;
+}
+
+td.more {
+    cursor: pointer;
+    font-style: italic;
+}
+
+td.more:hover {
+    background-color: #eee;
+}
+
+div.event_status {
+    display: flex;
+    justify-content: space-between;
+}
+
+div.event_status span.warning {
+    color: red;
+}
+
+div.event_status span.action {
+    cursor: pointer;
+}
+
+div.logs {
+    width: 100%;
+    overflow-x: scroll;
+    border: 1px solid silver;
+}
+
+div.logs pre {
+    white-space: nowrap;
+    padding: 10px;
+    font-family: sans;
 }

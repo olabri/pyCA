@@ -17,12 +17,9 @@ import logging
 import os
 import os.path
 import pycurl
-import sys
 import time
-if sys.version_info[0] == 2:
-    from cStringIO import StringIO as bio
-else:
-    from io import BytesIO as bio
+from io import BytesIO as bio
+from urllib.parse import quote as urlquote
 
 
 logger = logging.getLogger(__name__)
@@ -31,29 +28,37 @@ logger = logging.getLogger(__name__)
 def http_request(url, post_data=None):
     '''Make an HTTP request to a given URL with optional parameters.
     '''
+    logger.debug('Requesting URL: %s', url)
     buf = bio()
     curl = pycurl.Curl()
     curl.setopt(curl.URL, url.encode('ascii', 'ignore'))
 
+    # More verbose curl calls in debug mode
+    if logger.getEffectiveLevel() == logging.DEBUG:
+        curl.setopt(pycurl.VERBOSE, True)
+
     # Disable HTTPS verification methods if insecure is set
-    if config()['server']['insecure']:
+    if config('server', 'insecure'):
         curl.setopt(curl.SSL_VERIFYPEER, 0)
         curl.setopt(curl.SSL_VERIFYHOST, 0)
 
-    if config()['server']['certificate']:
+    if config('server', 'certificate'):
         # Make sure verification methods are turned on
         curl.setopt(curl.SSL_VERIFYPEER, 1)
         curl.setopt(curl.SSL_VERIFYHOST, 2)
         # Import your certificates
-        curl.setopt(pycurl.CAINFO, config()['server']['certificate'])
+        curl.setopt(pycurl.CAINFO, config('server', 'certificate'))
 
     if post_data:
         curl.setopt(curl.HTTPPOST, post_data)
     curl.setopt(curl.WRITEFUNCTION, buf.write)
-    curl.setopt(pycurl.HTTPAUTH, pycurl.HTTPAUTH_DIGEST)
-    curl.setopt(pycurl.USERPWD, "%s:%s" % (config()['server']['username'],
-                                           config()['server']['password']))
-    curl.setopt(curl.HTTPHEADER, ['X-Requested-Auth: Digest'])
+    logger.debug('Using authentication method %s',
+                 config('server')['auth_method'])
+    if config('server')['auth_method'] == 'digest':
+        curl.setopt(curl.HTTPHEADER, ['X-Requested-Auth: Digest'])
+        curl.setopt(pycurl.HTTPAUTH, pycurl.HTTPAUTH_DIGEST)
+    curl.setopt(pycurl.USERPWD, ':'.join([config('server', 'username'),
+                                          config('server', 'password')]))
     curl.setopt(curl.FAILONERROR, True)
     curl.setopt(curl.FOLLOWLOCATION, True)
     curl.perform()
@@ -68,7 +73,7 @@ def get_service(service_type):
     Opencast ServiceRegistry.
     '''
     endpoint = '/services/available.json?serviceType=' + str(service_type)
-    url = '%s%s' % (config()['server']['url'], endpoint)
+    url = config('server', 'url') + endpoint
     response = http_request(url).decode('utf-8')
     services = json.loads(response).get('services', {}).get('service', [])
     services = ensurelist(services)
@@ -79,21 +84,10 @@ def get_service(service_type):
     return endpoints
 
 
-def unix_ts(dtval):
-    '''Convert datetime into a unix timestamp.
-    This is the equivalent to Python 3's int(datetime.timestamp()).
-
-    :param dt: datetime to convert
-    '''
-    epoch = datetime(1970, 1, 1, 0, 0, tzinfo=tzutc())
-    delta = (dtval - epoch)
-    return delta.days * 24 * 3600 + delta.seconds
-
-
 def timestamp():
     '''Get current unix timestamp
     '''
-    return unix_ts(datetime.now(tzutc()))
+    return int(datetime.now(tzutc()).timestamp())
 
 
 def try_mkdir(directory):
@@ -106,18 +100,33 @@ def try_mkdir(directory):
             raise err
 
 
-def configure_service(service):
+def service(service_name, force_update=False):
     '''Get the location of a given service from Opencast and add it to the
     current configuration.
+
+    :param service_name: Name of the service type to request locations for
+    :param force_update: Force an update, possibly wait for a service to
+                         become available if none is available right now.
+    :return: List of service locations
     '''
-    while not config().get('service-' + service) and not terminate():
+    service_id = f'org.opencastproject.{service_name}'
+    service_url = config('services', service_id)
+    logger.debug('Cached service URLs for %s: %s', service_name, service_url)
+    if service_url and not force_update:
+        return service_url
+
+    # Get service from Opencast server
+    config('services')[service_id] = []
+    while not config('services', service_id) and not terminate():
         try:
-            config()['service-' + service] = \
-                get_service('org.opencastproject.' + service)
+            config('services')[service_id] = get_service(service_id)
+            logger.debug('Updates service URL for %s: %s',
+                         service_name,
+                         config('services', service_id))
         except pycurl.error as e:
-            logger.error('Could not get %s endpoint: %s. Retrying in 5s' %
-                         (service, e))
+            logger.error(f'Could not get {service} endpoint: {e}. Retry in 5s')
             time.sleep(5.0)
+    return config('services', service_id)
 
 
 def ensurelist(x):
@@ -134,17 +143,21 @@ def register_ca(status='idle'):
     '''
     # If this is a backup CA we don't tell the Matterhorn core that we are
     # here.  We will just run silently in the background:
-    if config()['agent']['backup_mode']:
+    if config('agent', 'backup_mode'):
         return
-    params = [('address', config()['ui']['url']), ('state', status)]
-    url = '%s/agents/%s' % (config()['service-capture.admin'][0],
-                            config()['agent']['name'])
+    service_endpoint = service('capture.admin')
+    if not service_endpoint:
+        logger.warning('Missing endpoint for updating agent status.')
+        return
+    params = [('address', config('ui', 'url')), ('state', status)]
+    name = urlquote(config('agent', 'name').encode('utf-8'), safe='')
+    url = f'{service_endpoint[0]}/agents/{name}'
     try:
         response = http_request(url, params).decode('utf-8')
         if response:
             logger.info(response)
     except pycurl.error as e:
-        logger.warning('Could not set agent statei to %s: %s' % (status, e))
+        logger.warning('Could not set agent state to %s: %s', status, e)
 
 
 def recording_state(recording_id, status):
@@ -156,40 +169,37 @@ def recording_state(recording_id, status):
     # If this is a backup CA we do not update the recording state since the
     # actual CA does that and we want to interfere.  We will just run silently
     # in the background:
-    if config()['agent']['backup_mode']:
+    if config('agent', 'backup_mode'):
         return
     params = [('state', status)]
-    url = config()['service-capture.admin'][0]
-    url += '/recordings/%s' % recording_id
+    url = service('capture.admin')[0]
+    url += f'/recordings/{recording_id}'
     try:
-        result = http_request(url, params)
+        result = http_request(url, params).decode('utf-8')
         logger.info(result)
     except pycurl.error as e:
-        logger.warning('Could not set recording state to %s: %s' % (status, e))
+        logger.warning('Could not set recording state to %s: %s', status, e)
 
 
-def update_event_status(event, status):
+@db.with_session
+def update_event_status(dbs, event, status):
     '''Update the status of a particular event in the database.
     '''
-    dbs = db.get_session()
     dbs.query(db.RecordedEvent).filter(db.RecordedEvent.start == event.start)\
                                .update({'status': status})
     event.status = status
     dbs.commit()
 
 
-def set_service_status(service, status):
+@db.with_session
+def set_service_status(dbs, service, status):
     '''Update the status of a particular service in the database.
     '''
-    dbs = db.get_session()
-    s = dbs.query(db.ServiceStates).filter(db.ServiceStates.type == service)
-    if s.count():
-        s.update({'status': status})
-    else:
-        srv = db.ServiceStates()
-        srv.type = service
-        srv.status = status
-        dbs.add(srv)
+    srv = db.ServiceStates()
+    srv.type = service
+    srv.status = status
+
+    dbs.merge(srv)
     dbs.commit()
 
 
@@ -201,10 +211,10 @@ def set_service_status_immediate(service, status):
     update_agent_state()
 
 
-def get_service_status(service):
+@db.with_session
+def get_service_status(dbs, service):
     '''Update the status of a particular service in the database.
     '''
-    dbs = db.get_session()
     srvs = dbs.query(db.ServiceStates).filter(db.ServiceStates.type == service)
 
     if srvs.count():
@@ -216,7 +226,6 @@ def get_service_status(service):
 def update_agent_state():
     '''Update the current agent state in opencast.
     '''
-    configure_service('capture.admin')
     status = 'idle'
 
     # Determine reported agent state with priority list

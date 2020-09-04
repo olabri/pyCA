@@ -26,14 +26,16 @@ class TestPycaCapture(unittest.TestCase):
         config.config()['capture']['command'] = 'touch {{dir}}/{{name}}.mp4'
         config.config()['capture']['directory'] = self.cadir
         config.config()['capture']['preview'] = [preview]
-        config.config()['service-capture.admin'] = ['']
+        config.config()['services']['org.opencastproject.capture.admin'] = ['']
 
         # Mock event
         db.init()
         self.event = db.BaseEvent()
         self.event.uid = '123123'
+        self.event.title = u'äüÄÜß'
         self.event.start = utils.timestamp()
         self.event.end = self.event.start
+        self.event.status = db.Status.UPCOMING
         data = [{'data': u'äüÄÜß',
                  'fmttype': 'application/xml',
                  'x-apple-filename': 'episode.xml'},
@@ -61,11 +63,8 @@ class TestPycaCapture(unittest.TestCase):
 
     def test_start_capture_recording_command_failure(self):
         config.config()['capture']['command'] = 'false'
-        try:
+        with self.assertRaises(RuntimeError):
             capture.start_capture(self.event)
-            assert False
-        except RuntimeError:
-            assert True
 
     def test_start_capture_sigterm(self):
         config.config()['capture']['command'] = 'sleep 10'
@@ -89,8 +88,7 @@ class TestPycaCapture(unittest.TestCase):
         capture.run()
 
     def test_sigterm(self):
-        try:
+        with self.assertRaises(BaseException) as e:
             capture.sigterm_handler(0, 0)
-        except BaseException as e:
-            assert e.code == 0
-            assert utils.terminate()
+        self.assertEqual(e.exception.code, 0)
+        self.assertTrue(utils.terminate())

@@ -12,6 +12,7 @@ import multiprocessing
 import signal
 import sys
 from pyca import capture, config, schedule, ingest, ui, agentstate, utils
+from pyca.db import get_session
 
 USAGE = '''
 Usage %s [OPTIONS] COMMAND
@@ -31,8 +32,8 @@ OPTIONS:
 CONFIGURATION:
   PyCA will try to find a configuration in the following order:
    - Configuration specified on the command line
-   - /etc/pyca.conf
    - ./etc/pyca.conf
+   - /etc/pyca/pyca.conf
 '''
 
 
@@ -101,6 +102,8 @@ def main():
     cmd = (args + ['run'])[0]
 
     if cmd == 'run':
+        # ensure database is created first
+        get_session().close()
         run_all(schedule, capture, ingest, agentstate)
     elif cmd == 'schedule':
         schedule.run()
@@ -112,7 +115,7 @@ def main():
         agentstate.run()
     elif cmd == 'ui':
         signal.signal(signal.SIGINT, signal.default_int_handler)
-        ui.app.run()
+        ui.app.run(threaded=False)
     else:
         # Invalid command
         usage(3)

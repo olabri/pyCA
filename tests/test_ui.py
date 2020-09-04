@@ -28,32 +28,24 @@ class TestPycaUI(unittest.TestCase):
         os.remove(self.dbfile)
         os.remove(self.previewfile)
 
-    def test_dtfmt(self):
-        assert ui.dtfmt(1488830224).startswith('2017-03-0')
-
     def test_home(self):
         # Without authentication
         with ui.app.test_request_context():
-            assert ui.home().status_code == 401
+            self.assertEqual(ui.home().status_code, 401)
 
         # With authentication
         with ui.app.test_request_context(headers=self.auth):
-            assert '<title>pyCA</title>' in ui.home()
-
-        # Mess up limits (fallback to defaults)
-        with ui.app.test_request_context('/?limit_upcoming=nan',
-                                         headers=self.auth):
-            assert '<title>pyCA</title>' in ui.home()
+            self.assertEqual(ui.home().status_code, 302)
 
     def test_ui(self):
         # Without authentication
         with ui.app.test_request_context():
-            assert ui.serve_image(0).status_code == 401
+            self.assertEqual(ui.serve_image(0).status_code, 401)
 
         # With authentication
         with ui.app.test_request_context(headers=self.auth):
-            assert ui.serve_image(9)[1] == 404
+            self.assertEqual(ui.serve_image(9)[1], 404)
         with ui.app.test_request_context(headers=self.auth):
             r = ui.serve_image(0)
-            assert r.status_code == 200
+            self.assertEqual(r.status_code, 200)
             r.close()

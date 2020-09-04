@@ -11,8 +11,11 @@ import os.path
 import string
 from pyca.config import config
 from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy import Column, Integer, String, LargeBinary, create_engine
+from sqlalchemy import Column, Integer, Text, LargeBinary, DateTime, \
+    create_engine
 from sqlalchemy.orm import sessionmaker
+from datetime import datetime
+from functools import wraps
 Base = declarative_base()
 
 
@@ -21,7 +24,7 @@ def init():
     structure will be created if nonexistent.
     '''
     global engine
-    engine = create_engine(config()['agent']['database'])
+    engine = create_engine(config('agent', 'database'))
     Base.metadata.create_all(engine)
 
 
@@ -35,6 +38,28 @@ def get_session():
         init()
     Session = sessionmaker(bind=engine)
     return Session()
+
+
+def with_session(f):
+    """Wrapper for f to make a SQLAlchemy session present within the function
+
+    :param f: Function to call
+    :type f: Function
+    :raises e: Possible exception of f
+    :return: Result of f
+    """
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        session = get_session()
+        try:
+            result = f(session, *args, **kwargs)
+        except Exception as e:
+            session.rollback()
+            raise e
+        finally:
+            session.close()
+        return result
+    return decorated
 
 
 class Constants():
@@ -57,6 +82,7 @@ class Status(Constants):
     UPLOADING = 5
     FAILED_UPLOADING = 6
     FINISHED_UPLOADING = 7
+    PARTIAL_RECORDING = 8
 
 
 class ServiceStatus(Constants):
@@ -82,10 +108,14 @@ class BaseEvent():
 
     __tablename__ = 'event'
 
-    uid = Column('uid', String(255), nullable=False, primary_key=True)
+    uid = Column('uid', Text(), nullable=False, primary_key=True)
     start = Column('start', Integer(), primary_key=True)
     end = Column('end', Integer(), nullable=False)
+    title = Column('title', Text())
     data = Column('data', LargeBinary(), nullable=False)
+    status = Column('status', Integer(), nullable=False,
+                    default=Status.UPCOMING)
+    tracks = Column('tracks', LargeBinary(), nullable=True)
 
     def get_data(self):
         '''Load JSON data from event.
@@ -106,7 +136,7 @@ class BaseEvent():
     def directory(self):
         '''Returns recording directory of this event.
         '''
-        return os.path.join(config()['capture']['directory'], self.name())
+        return os.path.join(config('capture', 'directory'), self.name())
 
     def remaining_duration(self, time):
         '''Returns the remaining duration for a recording.
@@ -118,6 +148,18 @@ class BaseEvent():
         '''
         return Status.str(self.status)
 
+    def get_tracks(self):
+        '''Load JSON track data from event.
+        '''
+        if not self.tracks:
+            return []
+        return json.loads(self.tracks.decode('utf-8'))
+
+    def set_tracks(self, tracks):
+        '''Store track data as JSON.
+        '''
+        self.tracks = json.dumps(tracks).encode('utf-8')
+
     def __repr__(self):
         '''Return a string representation of an artist object.
 
@@ -125,16 +167,23 @@ class BaseEvent():
         '''
         return '<Event(start=%i, uid="%s")>' % (self.start, self.uid)
 
-    def serialize(self, expand=0):
+    def serialize(self):
         '''Serialize this object as dictionary usable for conversion to JSON.
 
-        :param expand: Defines if sub objects shall be serialized as well.
         :return: Dictionary representing this object.
         '''
-        return {'start': self.start,
+        return {
+            'type': 'event',
+            'id': self.uid,
+            'attributes': {
+                'start': self.start,
                 'end': self.end,
                 'uid': self.uid,
-                'data': self.data}
+                'title': self.title,
+                'data': self.get_data(),
+                'status': Status.str(self.status)
+            }
+        }
 
 
 class UpcomingEvent(Base, BaseEvent):
@@ -148,30 +197,14 @@ class RecordedEvent(Base, BaseEvent):
 
     __tablename__ = 'recorded_event'
 
-    status = Column('status', Integer(), nullable=False,
-                    default=Status.UPCOMING)
-    tracks = Column('tracks', LargeBinary(), nullable=True)
-
     def __init__(self, event=None):
         if event:
             self.uid = event.uid
             self.start = event.start
             self.end = event.end
+            self.title = event.title
             self.data = event.data
-            if hasattr(event, 'status'):
-                self.status = event.status
-
-    def get_tracks(self):
-        '''Load JSON track data from event.
-        '''
-        if not self.tracks:
-            return []
-        return json.loads(self.tracks.decode('utf-8'))
-
-    def set_tracks(self, tracks):
-        '''Store track data as JSON.
-        '''
-        self.tracks = json.dumps(tracks).encode('utf-8')
+            self.status = event.status
 
 
 class ServiceStates(Base):
@@ -187,3 +220,17 @@ class ServiceStates(Base):
         if service:
             self.type = service.type
             self.status = service.status
+
+
+class UpstreamState(Base):
+    '''State of the upstream Opencast server.'''
+    __tablename__ = 'upstream_state'
+    url = Column('url', Text(), primary_key=True)
+    last_synced = Column('last_synced', DateTime())
+
+    @staticmethod
+    def update_sync_time(url):
+        s = get_session()
+        s.merge(UpstreamState(url=url, last_synced=datetime.utcnow()))
+        s.commit()
+        s.close()

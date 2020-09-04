@@ -7,6 +7,7 @@ import configobj
 import logging
 import logging.handlers
 import os
+import socket
 import sys
 from validate import Validator
 
@@ -14,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 __CFG = '''
 [agent]
-name             = string(default='pyca')
+name             = string(default='')
 update_frequency = integer(min=5, default=60)
 cal_lookahead    = integer(min=0, default=14)
 backup_mode      = boolean(default=false)
@@ -28,26 +29,32 @@ flavors          = force_list(default=list('presenter/source'))
 files            = force_list(default=list('{{dir}}/{{name}}.webm'))
 preview_dir      = string(default='./recordings')
 preview          = force_list(default=list())
+sigcustom        = integer(min=1, default=2)
+sigcustom_time   = integer(min=-1, default=-1)
 sigterm_time     = integer(min=-1, default=-1)
 sigkill_time     = integer(min=-1, default=120)
 exit_code        = integer(min=0, max=255, default=0)
 
+[ingest]
+delay_max        = integer(min=0, default=0)
+delay_min        = integer(min=0, default=0)
+delete_after_upload = boolean(default=false)
+
 [server]
-url              = string(default='https://octestallinone.virtuos.uos.de')
+url              = string(default='https://develop.opencast.org')
+auth_method      = option('basic', 'digest', default='digest')
 username         = string(default='opencast_system_account')
 password         = string(default='CHANGE_ME')
 insecure         = boolean(default=False)
 certificate      = string(default='')
 
-[ingest]
-delay_max        = integer(min=0, default=0)
-delay_min        = integer(min=0, default=0)
 
 [ui]
 username         = string(default='admin')
 password         = string(default='opencast')
 refresh_rate     = integer(min=1, default=10)
 url              = string(default='http://localhost:5000')
+log_command      = string(default='')
 
 [logging]
 syslog           = boolean(default=False)
@@ -55,6 +62,8 @@ stderr           = boolean(default=True)
 file             = string(default='')
 level            = option('debug', 'info', 'warning', 'error', default='info')
 format           = string(default='[%(name)s:%(lineno)s:%(funcName)s()] [%(levelname)s] %(message)s')
+
+[services]
 '''  # noqa
 
 cfgspec = __CFG.split('\n')
@@ -71,7 +80,7 @@ def configuration_file(cfgfile):
     # location.
     cfg = './etc/pyca.conf'
     if not os.path.isfile(cfg):
-        return '/etc/pyca.conf'
+        return '/etc/pyca/pyca.conf'
     return cfg
 
 
@@ -82,16 +91,22 @@ def update_configuration(cfgfile=None):
     '''
     configobj.DEFAULT_INTERPOLATION = 'template'
     cfgfile = configuration_file(cfgfile)
-    cfg = configobj.ConfigObj(cfgfile, configspec=cfgspec)
+    cfg = configobj.ConfigObj(cfgfile, configspec=cfgspec, encoding='utf-8')
     validator = Validator()
     val = cfg.validate(validator)
     if val is not True:
         raise ValueError('Invalid configuration: %s' % val)
     if len(cfg['capture']['files']) != len(cfg['capture']['flavors']):
         raise ValueError('List of files and flavors do not match')
+    if not cfg['agent']['name']:
+        cfg['agent']['name'] = 'pyca@' + socket.gethostname()
     globals()['__config'] = cfg
     logger_init()
-    logger.info('Configuration loaded from %s' % cfgfile)
+    if cfg['server'].get('url', '').endswith('/'):
+        logger.warning('Base URL ends with /. This is most likely a '
+                       'configuration error. The URL should contain nothing '
+                       'of the service paths.')
+    logger.info('Configuration loaded from %s', cfgfile)
     check()
     return cfg
 
@@ -106,16 +121,31 @@ def check():
         # Ensure certificate exists and is readable
         open(config('server')['certificate'], 'rb').close()
     if config('agent')['backup_mode']:
-        logger.info('Agent runs in bakup mode. No data will be sent to '
+        logger.info('Agent runs in backup mode. No data will be sent to '
                     'Opencast')
     if config('agent')['live_mode']:
-        logger.info('Agent runs in live mode. No command will be run if the event is not scheduled as a Live Event'
-                    'Opencast')
+        logger.info('Agent runs in live mode. No command will be run if the '
+                    'event is not scheduled as a Live Event in Opencast')
 
 
-def config(key=None):
+def config(*args):
+    '''Get a specific configuration value or the whole configuration, loading
+    the configuration file if it was not before.
+
+    :param key: optional configuration key to return
+    :type key: string
+    :return: Part of the configuration object containing the configuration
+             or configuration value.
+             If a part of the configuration object (e.g. configobj.Section) is
+             returned, it can be treated like a dictionary.
+             Returning None, if the configuration value is not found.
+    '''
     cfg = __config or update_configuration()
-    return cfg[key] if key else cfg
+    for key in args:
+        if cfg is None:
+            return
+        cfg = cfg.get(key)
+    return cfg
 
 
 def logger_init():
@@ -134,4 +164,4 @@ def logger_init():
         logging.root.addHandler(handler)
 
     logging.root.setLevel(logconf['level'].upper())
-    logger.info('Log level set to %s' % logconf['level'])
+    logger.info('Log level set to %s', logconf['level'])

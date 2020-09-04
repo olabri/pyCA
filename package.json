@@ -1,0 +1,26 @@
+{
+  "name": "pyCA",
+  "private": true,
+  "scripts": {
+    "server": "ui/server.js",
+    "build": "parcel build --public-url=/static/ --out-dir=pyca/ui/static/ ui/index.html",
+    "eslint": "eslint ui/func.js"
+  },
+  "alias": {
+    "vue": "./node_modules/vue/dist/vue.common.js"
+  },
+  "dependencies": {
+    "@fortawesome/fontawesome-svg-core": "^1.2.30",
+    "@fortawesome/free-solid-svg-icons": "^5.14.0",
+    "@fortawesome/vue-fontawesome": "^0.1.10",
+    "axios": "^0.20.0",
+    "vue": "^2.6.12"
+  },
+  "devDependencies": {
+    "eslint": "^7.7.0",
+    "eslint-plugin-vue": "^6.2.2",
+    "express": "^4.17.1",
+    "http-proxy-middleware": "^1.0.5",
+    "parcel-bundler": "^1.12.4"
+  }
+}
